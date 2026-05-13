@@ -6,7 +6,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes 
 
 - **24 read-only tools** covering company, fleet, missions, airports, flights, financials, and Virtual Airlines
 - **Dual transport**: stdio (local) or Streamable HTTP (remote/cloud)
-- **Per-call credentials**: API key, company ID, and VA ID can be passed as tool parameters from the Claude UI — no secrets baked into the server
+- **Flexible credential sources**: API key, company ID, and VA ID can be supplied as tool parameters, HTTP request headers, or server-side env vars — no secrets need to be baked into the server
 - **Docker-ready**: multi-stage Dockerfile included
 
 ## Quick Start
@@ -97,6 +97,20 @@ curl -s http://localhost:3000/health | jq .
 
 ## Connecting to Claude
 
+### Claude Code (Custom Headers — recommended for remote use)
+
+Claude Code's `claude mcp add` supports pinning custom HTTP headers per server. The server reads `oa-apikey`, `x-onair-company-id`, and `x-onair-va-id` headers as a credential source, so you can configure creds once at install time and skip per-call parameters.
+
+```bash
+claude mcp add --transport http onair https://<your-domain>/mcp \
+  --scope user \
+  --header "oa-apikey: <your-api-key>" \
+  --header "x-onair-company-id: <your-company-guid>" \
+  --header "x-onair-va-id: <your-va-guid>"
+```
+
+Drop the `x-onair-va-id` header if you don't use VA tools. Verify with `claude mcp list`.
+
 ### Claude Desktop App or Web (Custom Connector)
 
 1. Open Claude **Settings** > **Connectors**
@@ -104,16 +118,26 @@ curl -s http://localhost:3000/health | jq .
 3. Set the URL to `https://<your-domain>/mcp` (must be HTTPS)
 4. Save and enable
 
-Credentials flow through tool parameters — when Claude calls a tool, it passes `api_key`, `company_id`, etc. as part of the request. No secrets are stored on the server.
+The Claude app's custom-connector UI does not expose arbitrary HTTP headers, so creds flow through **tool parameters** instead — when Claude calls a tool, it passes `api_key`, `company_id`, etc. as part of the request. Paste them into your project's custom instructions so they're applied automatically across a project's chats.
+
+## Credential Resolution
+
+Each tool call resolves credentials in this priority order:
+
+1. **Tool parameters** (`api_key`, `company_id`, `va_id` passed in the call)
+2. **HTTP request headers** (`oa-apikey`, `x-onair-company-id`, `x-onair-va-id`) — only meaningful in HTTP transport mode
+3. **Server-side environment variables** (`ONAIR_API_KEY`, `ONAIR_COMPANY_ID`, `ONAIR_VA_ID`)
+
+Pick whichever tier matches your trust model. The server requires *some* source for the API key; the others can be omitted if the tools don't need them.
 
 ## Environment Variables
 
-All optional. Tool parameters override these when provided.
+All optional. Tool parameters and HTTP headers override these when provided.
 
 | Variable | Description |
 |---|---|
-| `ONAIR_API_KEY` | OnAir API key (fallback if not passed per-call) |
-| `ONAIR_COMPANY_ID` | Company GUID (fallback if not passed per-call) |
+| `ONAIR_API_KEY` | OnAir API key (fallback if not passed per-call or via header) |
+| `ONAIR_COMPANY_ID` | Company GUID (fallback if not passed per-call or via header) |
 | `ONAIR_VA_ID` | Virtual Airline GUID (fallback for VA tools) |
 | `TRANSPORT` | `stdio` (default) or `http` |
 | `PORT` | HTTP listen port (default: `3000`) |
@@ -170,10 +194,11 @@ All optional. Tool parameters override these when provided.
 ```
 onair-mcp-server/
 ├── src/
-│   ├── index.ts          # Entry point — stdio or HTTP transport
-│   ├── api-client.ts     # OnAir API client with per-call auth
-│   ├── constants.ts      # API base URL, limits
-│   ├── schemas.ts        # Shared Zod schemas for tool params
+│   ├── index.ts            # Entry point — stdio or HTTP transport
+│   ├── api-client.ts       # OnAir API client with per-call auth
+│   ├── request-context.ts  # AsyncLocalStorage for per-request HTTP headers
+│   ├── constants.ts        # API base URL, limits
+│   ├── schemas.ts          # Shared Zod schemas for tool params
 │   └── tools/
 │       ├── company.ts    # Company, employees, financials, VA tools
 │       ├── fleet.ts      # Fleet and aircraft tools

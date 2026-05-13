@@ -27,6 +27,7 @@ import { registerFleetTools } from "./tools/fleet.js";
 import { registerMissionTools } from "./tools/missions.js";
 import { registerAirportTools } from "./tools/airports.js";
 import { registerCompanyTools } from "./tools/company.js";
+import { requestContext } from "./request-context.js";
 
 function createServer(): McpServer {
   const server = new McpServer({
@@ -78,18 +79,20 @@ async function runHTTP(): Promise<void> {
 
   // MCP endpoint — stateless: new transport + server per request
   app.post("/mcp", async (req, res) => {
-    const server = createServer();
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true,
-    });
+    await requestContext.run({ headers: req.headers }, async () => {
+      const server = createServer();
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
 
-    res.on("close", () => {
-      transport.close();
-    });
+      res.on("close", () => {
+        transport.close();
+      });
 
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    });
   });
 
   const port = parseInt(process.env.PORT || "3000", 10);
