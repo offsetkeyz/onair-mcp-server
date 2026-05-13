@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { validateRedirectUris } from "../../src/auth/redirect-uri.js";
+import { InvalidClientMetadataError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 
 describe("validateRedirectUris", () => {
   it("accepts https URLs", () => {
@@ -46,5 +47,11 @@ describe("validateRedirectUris", () => {
 
   it("rejects empty array", () => {
     expect(() => validateRedirectUris([])).toThrow(/at least one/i);
+  });
+
+  it("throws InvalidClientMetadataError so the SDK returns 400", () => {
+    expect(() => validateRedirectUris(["javascript:alert(1)"])).toThrow(
+      InvalidClientMetadataError
+    );
   });
 });
