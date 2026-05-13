@@ -1,4 +1,4 @@
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 export function validateRedirectUris(uris: unknown): void {
   if (!Array.isArray(uris) || uris.length === 0) {
