@@ -73,7 +73,12 @@ function logEnvStatus(): void {
 async function runStdio(): Promise<void> {
   const server = createServer();
   const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await requestContext.run(
+    { transport: "stdio", headers: {} },
+    async () => {
+      await server.connect(transport);
+    }
+  );
   console.error("OnAir MCP server running via stdio");
 }
 
@@ -152,7 +157,7 @@ async function runHTTP(): Promise<void> {
   // ── MCP endpoint — stateless, OAuth-protected ─────────────────────
   app.post("/mcp", bearerAuth, async (req, res) => {
     await requestContext.run(
-      { headers: req.headers, auth: req.auth },
+      { transport: "http", headers: req.headers, auth: req.auth },
       async () => {
         const server = createServer();
         const transport = new StreamableHTTPServerTransport({

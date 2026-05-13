@@ -2,12 +2,19 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { IncomingHttpHeaders } from "node:http";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 
+export type TransportMode = "http" | "stdio";
+
 export interface RequestContext {
+  transport: TransportMode;
   headers: IncomingHttpHeaders;
   auth?: AuthInfo;
 }
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
+
+export function getTransport(): TransportMode {
+  return requestContext.getStore()?.transport ?? "stdio";
+}
 
 export function getHeader(name: string): string | undefined {
   const headers = requestContext.getStore()?.headers;

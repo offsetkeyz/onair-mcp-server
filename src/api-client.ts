@@ -1,6 +1,6 @@
 import axios, { AxiosError } from "axios";
 import { API_BASE_URL } from "./constants.js";
-import { getHeader, getAuthClaim } from "./request-context.js";
+import { getHeader, getAuthClaim, getTransport } from "./request-context.js";
 
 /**
  * OnAir API responses wrap data in { Content: T, Error?: string }
@@ -20,38 +20,52 @@ export interface OnAirCredentials {
 }
 
 /**
- * Resolve credentials in priority order:
+ * Resolve credentials based on transport mode.
+ *
+ * HTTP mode: JWT OAuth claims are the sole credential source.
+ *   Per-call tool params, request headers, and env vars are ignored.
+ *
+ * Stdio mode: legacy fallback chain —
  *   1. Tool parameters (explicit per-call)
- *   2. OAuth JWT claims (from Bearer token, set during consent flow)
- *   3. HTTP request headers (oa-apikey, x-onair-company-id, x-onair-va-id)
- *   4. Server environment variables
+ *   2. HTTP request headers (oa-apikey, x-onair-company-id, x-onair-va-id)
+ *   3. Server environment variables
  */
 export function resolveCredentials(params: {
   api_key?: string;
   company_id?: string;
   va_id?: string;
 }): OnAirCredentials {
+  if (getTransport() === "http") {
+    const apiKey = getAuthClaim("onair_api_key");
+    if (!apiKey) {
+      throw new Error(
+        "No OAuth credentials. Re-authenticate via the OAuth flow — per-call api_key, request headers, and ONAIR_API_KEY env are not honored in HTTP mode."
+      );
+    }
+    return {
+      apiKey,
+      companyId: getAuthClaim("onair_company_id"),
+      vaId: getAuthClaim("onair_va_id"),
+    };
+  }
+
   const apiKey =
     params.api_key ||
-    getAuthClaim("onair_api_key") ||
     getHeader("oa-apikey") ||
     process.env.ONAIR_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "No API key provided. Authenticate via OAuth, pass api_key as a parameter, or set ONAIR_API_KEY on the server."
+      "No API key provided. Pass api_key as a parameter or set ONAIR_API_KEY."
     );
   }
-
   return {
     apiKey,
     companyId:
       params.company_id ||
-      getAuthClaim("onair_company_id") ||
       getHeader("x-onair-company-id") ||
       process.env.ONAIR_COMPANY_ID,
     vaId:
       params.va_id ||
-      getAuthClaim("onair_va_id") ||
       getHeader("x-onair-va-id") ||
       process.env.ONAIR_VA_ID,
   };
