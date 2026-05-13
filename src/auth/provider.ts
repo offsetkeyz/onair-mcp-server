@@ -5,6 +5,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
 import { validateRedirectUris } from "./redirect-uri.js";
+import { generateCsrfToken, safeEqual } from "./csrf.js";
 import type { Response } from "express";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
@@ -17,10 +18,13 @@ import type {
 
 interface PendingAuth {
   clientId: string;
+  clientName?: string;
   codeChallenge: string;
   redirectUri: string;
   state?: string;
   scopes?: string[];
+  csrfToken: string;
+  authCode?: string;
   onairApiKey?: string;
   onairCompanyId?: string;
   onairVaId?: string;
@@ -80,15 +84,29 @@ export class OnAirOAuthProvider implements OAuthServerProvider {
     res: Response
   ): Promise<void> {
     const authId = randomBytes(16).toString("hex");
+    const csrfToken = generateCsrfToken();
     pendingAuths.set(authId, {
       clientId: client.client_id,
+      clientName: client.client_name,
       codeChallenge: params.codeChallenge,
       redirectUri: params.redirectUri,
       state: params.state,
       scopes: params.scopes,
+      csrfToken,
       expiresAt: Date.now() + 10 * 60 * 1000,
     });
-    res.type("html").send(consentPage(authId));
+    res.cookie("onair_csrf", csrfToken, {
+      httpOnly: true,
+      sameSite: "strict",
+      secure: res.req.protocol === "https",
+      maxAge: 10 * 60 * 1000,
+      path: "/",
+    });
+    const safeClientName = escapeHtml(client.client_name || client.client_id);
+    const safeRedirect = escapeHtml(params.redirectUri);
+    res
+      .type("html")
+      .send(consentPage(authId, csrfToken, safeClientName, safeRedirect));
   }
 
   async challengeForAuthorizationCode(
@@ -167,25 +185,65 @@ export class OnAirOAuthProvider implements OAuthServerProvider {
 
   completeAuthorization(
     authId: string,
+    submittedCsrfToken: string,
     onairApiKey: string,
     onairCompanyId?: string,
     onairVaId?: string
   ): { redirectUri: string; code: string; state?: string } | null {
     const pending = pendingAuths.get(authId);
-    if (!pending || pending.expiresAt < Date.now()) {
-      return null;
-    }
+    if (!pending || pending.expiresAt < Date.now()) return null;
+    if (!safeEqual(pending.csrfToken, submittedCsrfToken)) return null;
+
+    // Decouple the OAuth code from authId: mint a fresh code at consent time.
+    const code = randomBytes(32).toString("hex");
     pending.onairApiKey = onairApiKey;
     pending.onairCompanyId = onairCompanyId;
     pending.onairVaId = onairVaId;
-    return {
-      redirectUri: pending.redirectUri,
-      code: authId,
-      state: pending.state,
-    };
+    pending.authCode = code;
+    pendingAuths.set(code, pending); // make lookups by code work
+    pendingAuths.delete(authId);
+
+    return { redirectUri: pending.redirectUri, code, state: pending.state };
   }
 }
 
-function consentPage(authId: string): string {
-  return '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8"/>\n<meta name="viewport" content="width=device-width,initial-scale=1"/>\n<title>OnAir MCP - Authorize</title>\n<style>\n*{box-sizing:border-box;margin:0;padding:0}\nbody{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;justify-content:center;align-items:center;min-height:100vh;padding:1rem}\n.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:2rem;max-width:420px;width:100%;box-shadow:0 4px 24px rgba(0,0,0,0.3)}\nh1{font-size:1.25rem;margin-bottom:.25rem;color:#f8fafc}\n.sub{font-size:.85rem;color:#94a3b8;margin-bottom:1.5rem}\nlabel{display:block;font-size:.8rem;font-weight:600;color:#94a3b8;margin-bottom:.25rem;text-transform:uppercase;letter-spacing:.05em}\ninput{width:100%;padding:.6rem .75rem;border:1px solid #475569;border-radius:6px;background:#0f172a;color:#f1f5f9;font-size:.9rem;margin-bottom:1rem;outline:none}\ninput:focus{border-color:#3b82f6}\ninput::placeholder{color:#64748b}\n.req{color:#ef4444}\n.opt{color:#64748b;font-weight:400;font-size:.75rem}\nbtn,button{width:100%;padding:.7rem;background:#3b82f6;color:#fff;border:none;border-radius:6px;font-size:.95rem;font-weight:600;cursor:pointer;margin-top:.5rem}\nbutton:hover{background:#2563eb}\n.help{font-size:.75rem;color:#64748b;margin-top:1rem;text-align:center}\n</style>\n</head>\n<body>\n<div class="card">\n<h1>Connect to OnAir</h1>\n<p class="sub">Enter your OnAir credentials to authorize Claude.</p>\n<form method="POST" action="/oauth/consent">\n<input type="hidden" name="auth_id" value="' + authId + '"/>\n<label>API Key <span class="req">*</span></label>\n<input type="password" name="api_key" required placeholder="e.g. a1b2c3d4-e5f6-..." autocomplete="off"/>\n<label>Company ID <span class="req">*</span></label>\n<input type="text" name="company_id" required placeholder="e.g. 7d69917d-f015-..." autocomplete="off"/>\n<label>VA ID <span class="opt">(optional)</span></label>\n<input type="text" name="va_id" placeholder="e.g. 12345678-abcd-..." autocomplete="off"/>\n<button type="submit">Authorize</button>\n</form>\n<p class="help">Find these in Settings (bottom-left) in the OnAir desktop client.</p>\n</div>\n</body>\n</html>';
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function consentPage(
+  authId: string,
+  csrfToken: string,
+  clientName: string,
+  redirectUri: string
+): string {
+  return (
+    '<!DOCTYPE html>\n<html lang="en"><head><meta charset="utf-8"/>' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1"/>' +
+    '<title>OnAir MCP - Authorize</title>' +
+    '<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;justify-content:center;align-items:center;min-height:100vh;padding:1rem}.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:2rem;max-width:480px;width:100%}h1{font-size:1.25rem;color:#f8fafc}.sub{font-size:.85rem;color:#94a3b8;margin:.5rem 0 1.5rem}.client{background:#0f172a;border:1px solid #334155;border-radius:6px;padding:.75rem;margin-bottom:1.5rem;font-size:.8rem;color:#cbd5e1}.client b{color:#f1f5f9}.client code{display:block;margin-top:.25rem;word-break:break-all;color:#94a3b8;font-size:.75rem}label{display:block;font-size:.8rem;font-weight:600;color:#94a3b8;margin-bottom:.25rem;text-transform:uppercase;letter-spacing:.05em}input{width:100%;padding:.6rem .75rem;border:1px solid #475569;border-radius:6px;background:#0f172a;color:#f1f5f9;font-size:.9rem;margin-bottom:1rem;outline:none}input:focus{border-color:#3b82f6}.req{color:#ef4444}.opt{color:#64748b;font-size:.75rem}button{width:100%;padding:.7rem;background:#3b82f6;color:#fff;border:none;border-radius:6px;font-weight:600;cursor:pointer}button:hover{background:#2563eb}.help{font-size:.75rem;color:#64748b;margin-top:1rem;text-align:center}</style>' +
+    '</head><body><div class="card">' +
+    '<h1>Authorize access to OnAir</h1>' +
+    '<p class="sub">Only proceed if you initiated this from a trusted application.</p>' +
+    '<div class="client"><b>Requesting application:</b> ' + clientName +
+    '<code>Redirect: ' + redirectUri + '</code></div>' +
+    '<form method="POST" action="/oauth/consent">' +
+    '<input type="hidden" name="auth_id" value="' + authId + '"/>' +
+    '<input type="hidden" name="csrf_token" value="' + csrfToken + '"/>' +
+    '<label>API Key <span class="req">*</span></label>' +
+    '<input type="password" name="api_key" required autocomplete="off"/>' +
+    '<label>Company ID <span class="req">*</span></label>' +
+    '<input type="text" name="company_id" required autocomplete="off"/>' +
+    '<label>VA ID <span class="opt">(optional)</span></label>' +
+    '<input type="text" name="va_id" autocomplete="off"/>' +
+    '<button type="submit">Authorize</button>' +
+    '</form>' +
+    '<p class="help">Find these in Settings (bottom-left) in the OnAir desktop client.</p>' +
+    '</div></body></html>'
+  );
 }

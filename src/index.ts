@@ -27,10 +27,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import express from "express";
+import { installOAuthRoutes } from "./auth/routes.js";
 import { registerFleetTools } from "./tools/fleet.js";
 import { registerMissionTools } from "./tools/missions.js";
 import { registerAirportTools } from "./tools/airports.js";
@@ -89,55 +89,9 @@ async function runHTTP(): Promise<void> {
   const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
   const serverUrl = new URL(baseUrl);
 
-  // ── OAuth provider ────────────────────────────────────────────────
   const oauthProvider = new OnAirOAuthProvider();
 
-  // Install OAuth routes at app root (/.well-known/*, /authorize, /token, /register)
-  app.use(
-    mcpAuthRouter({
-      provider: oauthProvider,
-      issuerUrl: serverUrl,
-      baseUrl: serverUrl,
-      serviceDocumentationUrl: new URL(
-        "https://github.com/offsetkeyz/onair-mcp-server"
-      ),
-      scopesSupported: ["onair:read"],
-    })
-  );
-
-  // ── Consent form POST handler ─────────────────────────────────────
-  app.use(express.urlencoded({ extended: false }));
-  app.use(express.json());
-
-  app.post("/oauth/consent", (req, res) => {
-    const { auth_id, api_key, company_id, va_id } = req.body;
-
-    if (!auth_id || !api_key) {
-      res.status(400).send("Missing required fields.");
-      return;
-    }
-
-    const result = oauthProvider.completeAuthorization(
-      auth_id,
-      api_key,
-      company_id || undefined,
-      va_id || undefined
-    );
-
-    if (!result) {
-      res.status(400).send("Authorization expired or invalid. Please try again.");
-      return;
-    }
-
-    // Redirect back to Claude with the authorization code
-    const redirectUrl = new URL(result.redirectUri);
-    redirectUrl.searchParams.set("code", result.code);
-    if (result.state) {
-      redirectUrl.searchParams.set("state", result.state);
-    }
-
-    res.redirect(302, redirectUrl.toString());
-  });
+  installOAuthRoutes(app, oauthProvider, serverUrl);
 
   // ── Health check ──────────────────────────────────────────────────
   app.get("/health", (_req, res) => {
