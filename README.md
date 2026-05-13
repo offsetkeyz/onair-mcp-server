@@ -6,7 +6,8 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes 
 
 - **24 read-only tools** covering company, fleet, missions, airports, flights, financials, and Virtual Airlines
 - **Dual transport**: stdio (local) or Streamable HTTP (remote/cloud)
-- **Per-call credentials**: API key, company ID, and VA ID can be passed as tool parameters from the Claude UI — no secrets baked into the server
+- **OAuth 2.1 authentication**: standard PKCE flow with a built-in consent form — enter your OnAir credentials once and Claude handles the rest
+- **4-tier credential resolution**: tool params → OAuth JWT → HTTP headers → env vars
 - **Docker-ready**: multi-stage Dockerfile included
 
 ## Quick Start
@@ -50,25 +51,28 @@ This is the recommended path for use with Claude custom connectors (desktop app 
 
 ```bash
 # On your VM with Docker installed:
-git clone https://github.com/<your-username>/onair-mcp-server.git
+git clone https://github.com/offsetkeyz/onair-mcp-server.git
 cd onair-mcp-server
 
 # Build the image
 docker build -t onair-mcp .
 
-# Run — no env vars required if you'll pass credentials per-call from Claude
-docker run -d --name onair-mcp -p 3000:3000 onair-mcp
+# Generate a persistent JWT secret (save this — tokens survive restarts only if it stays the same)
+export JWT_SECRET=$(openssl rand -hex 32)
 
-# Or, set env vars as defaults so you don't have to pass them every call:
+# Run with OAuth enabled
 docker run -d --name onair-mcp -p 3000:3000 \
-  -e ONAIR_API_KEY=<your-api-key> \
-  -e ONAIR_COMPANY_ID=<your-company-guid> \
-  onair-mcp
+  -e TRANSPORT=http \
+  -e BASE_URL=https://<your-domain> \
+  -e JWT_SECRET=$JWT_SECRET \
+  --restart unless-stopped onair-mcp
 ```
 
-Health check: `curl http://<vm-ip>:3000/health`
+`BASE_URL` must match the public URL that Claude will use to reach the server. The OAuth discovery metadata references this URL for all endpoints.
 
-MCP endpoint: `http://<vm-ip>:3000/mcp`
+Health check: `curl https://<your-domain>/health`
+
+MCP endpoint: `https://<your-domain>/mcp`
 
 > **Production note**: Put a reverse proxy (Caddy, nginx) in front for TLS. Claude custom connectors require HTTPS in production.
 
@@ -78,7 +82,7 @@ If you're deploying via a CLI agent on a VM with Docker already installed, here'
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/<your-username>/onair-mcp-server.git
+git clone https://github.com/offsetkeyz/onair-mcp-server.git
 cd onair-mcp-server
 
 # 2. Build the Docker image
@@ -87,12 +91,16 @@ docker build -t onair-mcp .
 # 3. Stop any existing container
 docker rm -f onair-mcp 2>/dev/null || true
 
-# 4. Run (credentials passed per-call from Claude, no env vars needed)
-docker run -d --name onair-mcp -p 3000:3000 --restart unless-stopped onair-mcp
+# 4. Run with OAuth and persistent JWT secret
+docker run -d --name onair-mcp -p 3000:3000 \
+  -e TRANSPORT=http \
+  -e BASE_URL=https://<your-domain> \
+  -e JWT_SECRET=$(openssl rand -hex 32) \
+  --restart unless-stopped onair-mcp
 
-# 5. Verify
-curl -s http://localhost:3000/health | jq .
-# Expected: {"status":"ok","server":"onair-mcp-server","version":"1.0.0"}
+# 5. Verify health and OAuth discovery
+curl -s https://<your-domain>/health | jq .
+curl -s https://<your-domain>/.well-known/oauth-authorization-server | jq .
 ```
 
 ## Connecting to Claude
@@ -104,19 +112,36 @@ curl -s http://localhost:3000/health | jq .
 3. Set the URL to `https://<your-domain>/mcp` (must be HTTPS)
 4. Save and enable
 
-Credentials flow through tool parameters — when Claude calls a tool, it passes `api_key`, `company_id`, etc. as part of the request. No secrets are stored on the server.
+On the first tool call, Claude will discover the OAuth endpoints automatically, redirect you to the consent form, and prompt you to enter your OnAir API Key and Company ID. After authorization, Claude receives a JWT token and uses it for all subsequent requests — no credentials need to be passed as tool parameters.
+
+### Authentication Flow
+
+The server implements OAuth 2.1 with PKCE (S256), which is the MCP specification standard:
+
+1. Claude hits `/mcp` and gets a 401
+2. Claude discovers OAuth metadata at `/.well-known/oauth-authorization-server`
+3. Claude dynamically registers a client at `/register`
+4. Claude redirects you to `/authorize`, which serves a consent form
+5. You enter your OnAir API Key, Company ID, and optionally VA ID
+6. The server issues an authorization code and redirects back to Claude
+7. Claude exchanges the code for a JWT at `/token`
+8. The JWT contains your OnAir credentials and is sent as a Bearer token on every request
+
+Tokens are valid for 365 days. Credentials are resolved in priority order: tool parameters (explicit per-call) → JWT claims (from OAuth) → HTTP headers → server environment variables.
 
 ## Environment Variables
 
-All optional. Tool parameters override these when provided.
+All optional unless noted. Tool parameters and OAuth tokens override these when provided.
 
 | Variable | Description |
 |---|---|
-| `ONAIR_API_KEY` | OnAir API key (fallback if not passed per-call) |
-| `ONAIR_COMPANY_ID` | Company GUID (fallback if not passed per-call) |
-| `ONAIR_VA_ID` | Virtual Airline GUID (fallback for VA tools) |
 | `TRANSPORT` | `stdio` (default) or `http` |
 | `PORT` | HTTP listen port (default: `3000`) |
+| `BASE_URL` | Public URL of the server (required for HTTP mode, e.g. `https://onair.example.com`). Used in OAuth discovery metadata. |
+| `JWT_SECRET` | Secret for signing OAuth JWTs. If unset, a random secret is generated on startup (tokens won't survive container restarts). |
+| `ONAIR_API_KEY` | OnAir API key (lowest-priority fallback) |
+| `ONAIR_COMPANY_ID` | Company GUID (lowest-priority fallback) |
+| `ONAIR_VA_ID` | Virtual Airline GUID (lowest-priority fallback) |
 
 ## Tools Reference
 
@@ -170,15 +195,18 @@ All optional. Tool parameters override these when provided.
 ```
 onair-mcp-server/
 ├── src/
-│   ├── index.ts          # Entry point — stdio or HTTP transport
-│   ├── api-client.ts     # OnAir API client with per-call auth
-│   ├── constants.ts      # API base URL, limits
-│   ├── schemas.ts        # Shared Zod schemas for tool params
+│   ├── index.ts            # Entry point — stdio or HTTP transport, OAuth routes
+│   ├── api-client.ts       # OnAir API client with 4-tier credential resolution
+│   ├── request-context.ts  # AsyncLocalStorage for per-request headers + auth
+│   ├── constants.ts        # API base URL, limits
+│   ├── schemas.ts          # Shared Zod schemas for tool params
+│   ├── auth/
+│   │   └── provider.ts     # OAuth 2.1 provider — consent form, JWT signing, token verification
 │   └── tools/
-│       ├── company.ts    # Company, employees, financials, VA tools
-│       ├── fleet.ts      # Fleet and aircraft tools
-│       ├── missions.ts   # Jobs, FBO jobs, work orders
-│       └── airports.ts   # Airport, flight, company flights tools
+│       ├── company.ts      # Company, employees, financials, VA tools
+│       ├── fleet.ts        # Fleet and aircraft tools
+│       ├── missions.ts     # Jobs, FBO jobs, work orders
+│       └── airports.ts     # Airport, flight, company flights tools
 ├── Dockerfile
 ├── tsconfig.json
 └── package.json
