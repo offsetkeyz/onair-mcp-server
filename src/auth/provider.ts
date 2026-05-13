@@ -104,9 +104,11 @@ export class OnAirOAuthProvider implements OAuthServerProvider {
     });
     const safeClientName = escapeHtml(client.client_name || client.client_id);
     const safeRedirect = escapeHtml(params.redirectUri);
+    const safeAuthId = escapeHtml(authId);
+    const safeCsrfToken = escapeHtml(csrfToken);
     res
       .type("html")
-      .send(consentPage(authId, csrfToken, safeClientName, safeRedirect));
+      .send(consentPage(safeAuthId, safeCsrfToken, safeClientName, safeRedirect));
   }
 
   async challengeForAuthorizationCode(

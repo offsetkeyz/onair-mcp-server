@@ -12,6 +12,10 @@ export function installOAuthRoutes(
   provider: OnAirOAuthProvider,
   serverUrl: URL
 ): void {
+  // Trust the X-Forwarded-Proto header from reverse proxies (e.g. cloudflared),
+  // so req.protocol reflects the client-facing scheme (https) rather than the
+  // internal socket scheme (http).
+  app.set("trust proxy", 1);
   app.use(cookieParser());
   app.use(express.urlencoded({ extended: false }));
   app.use(express.json());
@@ -38,7 +42,9 @@ export function installOAuthRoutes(
       res.status(400).send("Missing required fields.");
       return;
     }
+    // CSRF: form token must match cookie (this check) AND match server-stored value (provider.completeAuthorization).
     if (!cookieToken || !csrf_token || !safeEqual(cookieToken, csrf_token)) {
+      res.clearCookie(CSRF_COOKIE, { path: "/" });
       res.status(403).send("CSRF check failed. Restart the authorization.");
       return;
     }
@@ -52,6 +58,7 @@ export function installOAuthRoutes(
     );
 
     if (!result) {
+      res.clearCookie(CSRF_COOKIE, { path: "/" });
       res.status(400).send("Authorization expired or invalid. Please try again.");
       return;
     }
