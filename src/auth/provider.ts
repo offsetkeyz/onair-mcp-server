@@ -4,6 +4,7 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { SignJWT, jwtVerify } from "jose";
+import { validateRedirectUris } from "./redirect-uri.js";
 import type { Response } from "express";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
@@ -55,6 +56,7 @@ class OnAirClientsStore implements OAuthRegisteredClientsStore {
   registerClient(
     client: Omit<OAuthClientInformationFull, "client_id" | "client_id_issued_at">
   ): OAuthClientInformationFull {
+    validateRedirectUris(client.redirect_uris);
     const full: OAuthClientInformationFull = {
       ...client,
       client_id: randomUUID(),
