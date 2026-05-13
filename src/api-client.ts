@@ -1,5 +1,6 @@
 import axios, { AxiosError } from "axios";
 import { API_BASE_URL } from "./constants.js";
+import { getHeader } from "./request-context.js";
 
 /**
  * OnAir API responses wrap data in { Content: T, Error?: string }
@@ -27,17 +28,22 @@ export function resolveCredentials(params: {
   company_id?: string;
   va_id?: string;
 }): OnAirCredentials {
-  const apiKey = params.api_key || process.env.ONAIR_API_KEY;
+  const apiKey =
+    params.api_key || getHeader("oa-apikey") || process.env.ONAIR_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "No API key provided. Pass api_key as a parameter or set ONAIR_API_KEY on the server."
+      "No API key provided. Pass api_key as a parameter, send oa-apikey header, or set ONAIR_API_KEY on the server."
     );
   }
 
   return {
     apiKey,
-    companyId: params.company_id || process.env.ONAIR_COMPANY_ID,
-    vaId: params.va_id || process.env.ONAIR_VA_ID,
+    companyId:
+      params.company_id ||
+      getHeader("x-onair-company-id") ||
+      process.env.ONAIR_COMPANY_ID,
+    vaId:
+      params.va_id || getHeader("x-onair-va-id") || process.env.ONAIR_VA_ID,
   };
 }
 
