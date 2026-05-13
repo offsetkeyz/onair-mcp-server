@@ -17,6 +17,7 @@ async function registerAndAuthorize(app: express.Express, redirect: string) {
     .send({ redirect_uris: [redirect], client_name: "test-client" });
   expect(reg.status).toBe(201);
   const clientId = reg.body.client_id;
+  const clientSecret = reg.body.client_secret;
 
   // Drive /authorize. Compute PKCE S256 challenge for verifier.
   const verifier = "verifier-verifier-verifier-verifier-verifier";
@@ -42,7 +43,7 @@ async function registerAndAuthorize(app: express.Express, redirect: string) {
   const authId = /name="auth_id" value="([0-9a-f]+)"/.exec(html)![1];
   const csrfToken = /name="csrf_token" value="([0-9a-f]+)"/.exec(html)![1];
   const cookie = authRes.headers["set-cookie"][0];
-  return { clientId, authId, csrfToken, cookie, verifier };
+  return { clientId, clientSecret, authId, csrfToken, cookie, verifier };
 }
 
 describe("consent flow security", () => {
@@ -138,5 +139,33 @@ describe("consent flow security", () => {
       });
     expect(res.status).toBe(302);
     expect(res.headers.location).toMatch(/^https:\/\/x\.example\/cb\?code=/);
+  });
+
+  it("issued code is redeemable at /token (end-to-end happy path)", async () => {
+    const { app } = buildApp();
+    const { authId, csrfToken, cookie, verifier, clientId, clientSecret } =
+      await registerAndAuthorize(app, "https://x.example/cb");
+
+    const consentRes = await request(app)
+      .post("/oauth/consent")
+      .set("Cookie", cookie)
+      .type("form")
+      .send({ auth_id: authId, api_key: "k", company_id: "c", csrf_token: csrfToken });
+    expect(consentRes.status).toBe(302);
+    const code = /code=([0-9a-f]+)/.exec(consentRes.headers.location)![1];
+
+    const tokenRes = await request(app)
+      .post("/token")
+      .type("form")
+      .send({
+        grant_type: "authorization_code",
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: "https://x.example/cb",
+        code_verifier: verifier,
+      });
+    expect(tokenRes.status).toBe(200);
+    expect(tokenRes.body).toHaveProperty("access_token");
   });
 });

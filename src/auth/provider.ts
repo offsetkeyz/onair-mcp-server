@@ -36,6 +36,15 @@ const pendingAuths = new Map<string, PendingAuth>();
 const revokedTokens = new Set<string>();
 
 const MIN_SECRET_BYTES = 32;
+const PENDING_AUTHS_MAX = 10_000;
+const AUTH_CODE_TTL_MS = 5 * 60 * 1000;
+
+function prunePendingAuths(): void {
+  const now = Date.now();
+  for (const [key, value] of pendingAuths) {
+    if (value.expiresAt < now) pendingAuths.delete(key);
+  }
+}
 
 let jwtSecret: Uint8Array;
 
@@ -92,6 +101,10 @@ export class OnAirOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response
   ): Promise<void> {
+    prunePendingAuths();
+    if (pendingAuths.size >= PENDING_AUTHS_MAX) {
+      throw new Error("Too many pending authorizations. Try again later.");
+    }
     const authId = randomBytes(16).toString("hex");
     const csrfToken = generateCsrfToken();
     pendingAuths.set(authId, {
@@ -176,15 +189,24 @@ export class OnAirOAuthProvider implements OAuthServerProvider {
     const { payload } = await jwtVerify(token, secret, {
       algorithms: ["HS256"],
     });
+    if (typeof payload.onair_api_key !== "string") {
+      throw new Error("Malformed token: missing onair_api_key claim.");
+    }
     return {
       token,
       clientId: payload.sub || "unknown",
       scopes: ["onair:read"],
       expiresAt: payload.exp,
       extra: {
-        onair_api_key: payload.onair_api_key as string,
-        onair_company_id: payload.onair_company_id as string | undefined,
-        onair_va_id: payload.onair_va_id as string | undefined,
+        onair_api_key: payload.onair_api_key,
+        onair_company_id:
+          typeof payload.onair_company_id === "string"
+            ? payload.onair_company_id
+            : undefined,
+        onair_va_id:
+          typeof payload.onair_va_id === "string"
+            ? payload.onair_va_id
+            : undefined,
       },
     };
   }
@@ -208,12 +230,14 @@ export class OnAirOAuthProvider implements OAuthServerProvider {
     if (!safeEqual(pending.csrfToken, submittedCsrfToken)) return null;
 
     // Decouple the OAuth code from authId: mint a fresh code at consent time.
+    // Reset expiration so the code lives AUTH_CODE_TTL_MS from consent, not from authorize.
     const code = randomBytes(32).toString("hex");
     pending.onairApiKey = onairApiKey;
     pending.onairCompanyId = onairCompanyId;
     pending.onairVaId = onairVaId;
     pending.authCode = code;
-    pendingAuths.set(code, pending); // make lookups by code work
+    pending.expiresAt = Date.now() + AUTH_CODE_TTL_MS;
+    pendingAuths.set(code, pending);
     pendingAuths.delete(authId);
 
     return { redirectUri: pending.redirectUri, code, state: pending.state };

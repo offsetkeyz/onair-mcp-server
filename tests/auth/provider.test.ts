@@ -20,6 +20,20 @@ describe("OnAirOAuthProvider.verifyAccessToken", () => {
     await expect(provider.verifyAccessToken(token)).rejects.toThrow();
   });
 
+  it("rejects a valid signature with no onair_api_key claim", async () => {
+    const provider = new OnAirOAuthProvider();
+    const secret = new TextEncoder().encode(process.env.JWT_SECRET);
+    const token = await new SignJWT({})
+      .setProtectedHeader({ alg: "HS256" })
+      .setIssuedAt()
+      .setExpirationTime("1h")
+      .setSubject("c")
+      .sign(secret);
+    await expect(provider.verifyAccessToken(token)).rejects.toThrow(
+      /onair_api_key/i
+    );
+  });
+
   it("warns on short JWT_SECRET", async () => {
     process.env.JWT_SECRET = "short";
     _resetJwtSecretForTesting();

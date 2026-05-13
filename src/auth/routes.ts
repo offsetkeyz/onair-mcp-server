@@ -63,7 +63,7 @@ export function installOAuthRoutes(
       return;
     }
 
-    res.clearCookie(CSRF_COOKIE);
+    res.clearCookie(CSRF_COOKIE, { path: "/" });
     const redirectUrl = new URL(result.redirectUri);
     redirectUrl.searchParams.set("code", result.code);
     if (result.state) redirectUrl.searchParams.set("state", result.state);
