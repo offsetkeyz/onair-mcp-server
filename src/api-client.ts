@@ -1,5 +1,6 @@
 import axios, { AxiosError } from "axios";
 import { API_BASE_URL } from "./constants.js";
+import { getHeader, getAuthClaim } from "./request-context.js";
 
 /**
  * OnAir API responses wrap data in { Content: T, Error?: string }
@@ -19,25 +20,40 @@ export interface OnAirCredentials {
 }
 
 /**
- * Resolve credentials: tool params take priority, then env vars.
- * Throws if no API key is available from either source.
+ * Resolve credentials in priority order:
+ *   1. Tool parameters (explicit per-call)
+ *   2. OAuth JWT claims (from Bearer token, set during consent flow)
+ *   3. HTTP request headers (oa-apikey, x-onair-company-id, x-onair-va-id)
+ *   4. Server environment variables
  */
 export function resolveCredentials(params: {
   api_key?: string;
   company_id?: string;
   va_id?: string;
 }): OnAirCredentials {
-  const apiKey = params.api_key || process.env.ONAIR_API_KEY;
+  const apiKey =
+    params.api_key ||
+    getAuthClaim("onair_api_key") ||
+    getHeader("oa-apikey") ||
+    process.env.ONAIR_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "No API key provided. Pass api_key as a parameter or set ONAIR_API_KEY on the server."
+      "No API key provided. Authenticate via OAuth, pass api_key as a parameter, or set ONAIR_API_KEY on the server."
     );
   }
 
   return {
     apiKey,
-    companyId: params.company_id || process.env.ONAIR_COMPANY_ID,
-    vaId: params.va_id || process.env.ONAIR_VA_ID,
+    companyId:
+      params.company_id ||
+      getAuthClaim("onair_company_id") ||
+      getHeader("x-onair-company-id") ||
+      process.env.ONAIR_COMPANY_ID,
+    vaId:
+      params.va_id ||
+      getAuthClaim("onair_va_id") ||
+      getHeader("x-onair-va-id") ||
+      process.env.ONAIR_VA_ID,
   };
 }
 
