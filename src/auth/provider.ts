@@ -35,13 +35,22 @@ const clients = new Map<string, OAuthClientInformationFull>();
 const pendingAuths = new Map<string, PendingAuth>();
 const revokedTokens = new Set<string>();
 
+const MIN_SECRET_BYTES = 32;
+
 let jwtSecret: Uint8Array;
 
 function getJwtSecret(): Uint8Array {
   if (!jwtSecret) {
     const envSecret = process.env.JWT_SECRET;
     if (envSecret) {
-      jwtSecret = new TextEncoder().encode(envSecret);
+      const bytes = new TextEncoder().encode(envSecret);
+      if (bytes.length < MIN_SECRET_BYTES) {
+        console.error(
+          `WARNING: JWT_SECRET is too short (${bytes.length} bytes). ` +
+            `Use at least ${MIN_SECRET_BYTES} bytes — tokens may be brute-forceable.`
+        );
+      }
+      jwtSecret = bytes;
     } else {
       jwtSecret = randomBytes(32);
       console.error(
@@ -164,7 +173,9 @@ export class OnAirOAuthProvider implements OAuthServerProvider {
       throw new Error("Token has been revoked");
     }
     const secret = getJwtSecret();
-    const { payload } = await jwtVerify(token, secret);
+    const { payload } = await jwtVerify(token, secret, {
+      algorithms: ["HS256"],
+    });
     return {
       token,
       clientId: payload.sub || "unknown",
@@ -207,6 +218,11 @@ export class OnAirOAuthProvider implements OAuthServerProvider {
 
     return { redirectUri: pending.redirectUri, code, state: pending.state };
   }
+}
+
+// Test seam: allows unit tests to reset the cached JWT secret between cases.
+export function _resetJwtSecretForTesting(): void {
+  jwtSecret = undefined as unknown as Uint8Array;
 }
 
 function escapeHtml(s: string): string {
