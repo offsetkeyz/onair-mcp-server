@@ -77,9 +77,9 @@ async function runStdio(): Promise<void> {
     { transport: "stdio", headers: {} },
     async () => {
       await server.connect(transport);
+      console.error("OnAir MCP server running via stdio");
     }
   );
-  console.error("OnAir MCP server running via stdio");
 }
 
 async function runHTTP(): Promise<void> {
