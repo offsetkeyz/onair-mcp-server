@@ -7,7 +7,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes 
 - **24 read-only tools** covering company, fleet, missions, airports, flights, financials, and Virtual Airlines
 - **Dual transport**: stdio (local) or Streamable HTTP (remote/cloud)
 - **OAuth 2.1 authentication**: standard PKCE flow with a built-in consent form — enter your OnAir credentials once and Claude handles the rest
-- **4-tier credential resolution**: tool params → OAuth JWT → HTTP headers → env vars
+- **OAuth-only credentials in HTTP mode**: when running as a remote MCP server, the JWT issued by the OAuth flow is the sole credential source. Tool-param, header, and env-var credential fallbacks apply only to stdio (single-tenant local) deployments.
 - **Docker-ready**: multi-stage Dockerfile included
 
 ## Quick Start
@@ -113,6 +113,8 @@ curl -s https://<your-domain>/.well-known/oauth-authorization-server | jq .
 4. Save and enable
 
 On the first tool call, Claude will discover the OAuth endpoints automatically, redirect you to the consent form, and prompt you to enter your OnAir API Key and Company ID. After authorization, Claude receives a JWT token and uses it for all subsequent requests — no credentials need to be passed as tool parameters.
+
+> **Breaking change (2026-05-13):** In HTTP transport, the `api_key`, `company_id`, and `va_id` tool parameters are ignored; credentials must come from the OAuth flow. If your existing project instructions paste these as tool params, remove them — Claude will obtain credentials automatically after re-running consent.
 
 ### Authentication Flow
 
